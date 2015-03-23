@@ -138,15 +138,15 @@ __global__ void kernel_combine_vector(float *d_src, float *d_res, int w, int i)
 }
 
 
-// __global__ void kernel_sum_vector(float *d_src, float *d_res, int w)
-// {
-// 	int x = threadIdx.x + blockDim.x * blockIdx.x;
+__global__ void kernel_sum_vector(float *d_src, float *d_res, int w)
+{
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
 
-// 	if(x < w)
-// 	{
-// 		d_res[x] += d_src[x];	
-// 	}
-// }
+	if(x < w)
+	{
+		d_res[x] += d_src[x];	
+	}
+}
 
 __global__ void kernel_datacopy(float *d_src, float *d_res, int w)
 {
@@ -160,7 +160,7 @@ __global__ void kernel_datacopy(float *d_src, float *d_res, int w)
 	d_res[x] = d_src[x];
 }
 
-__global__ void kernel_update_vector(float *a, float *b, float *c, int w)
+__global__ void kernel_update_vector(float *d_src, float *d_res, float para, int w)
 {
 	int x = threadIdx.x + blockDim.x * blockIdx.x;
 
@@ -169,7 +169,7 @@ __global__ void kernel_update_vector(float *a, float *b, float *c, int w)
 		return;
 	}
 
-	a[x] = b[x] + c[x];
+	d_res[x] = d_src[x] - para * d_res[x];
 }
 
 void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, int n, int nz, int k, int w, int h)
@@ -209,15 +209,17 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
     float *d_b = NULL;
     cudaMalloc(&d_b, sizeof(float) * n * n * h);
     cudaMemcpy(d_b, b, sizeof(float) * n * n * h, cudaMemcpyHostToDevice);
-    float *d_b_norm = NULL;
-    cudaMalloc(&d_b_norm, sizeof(float) * n * n * h);
     float *d_u = NULL;
-    cudaMalloc(&d_u, sizeof(float) * h);
+    cudaMalloc(&d_u, sizeof(float) * n * n * h);
+    float *d_u_small = NULL;
+    cudaMalloc(&d_u_small, sizeof(float) * h);
 
     float *d_aux0 = NULL;
     cudaMalloc(&d_aux0, sizeof(float) * w);
     float *d_aux0_shifted = NULL;
     cudaMalloc(&d_aux0_shifted, sizeof(float) * w);
+    // float *d_vector0;
+    // cudaMalloc(&d_vector0, sizeof(float) * w);
     float *d_vector0 = NULL;
     cudaMalloc(&d_vector0, sizeof(float) * w);
 
@@ -230,8 +232,8 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
     float *d_w = NULL;
     cudaMalloc(&d_w, sizeof(float) * w);
 
-    float *d_u_large = NULL;
-    cudaMalloc(&d_u_large, sizeof(float) * n * n * h);
+    float *d_u_small_large = NULL;
+    cudaMalloc(&d_u_small_large, sizeof(float) * n * n * h);
     float *d_aux2 = NULL;
     cudaMalloc(&d_aux2, sizeof(float) * w);
     float *d_aux2_shifted = NULL;
@@ -273,6 +275,8 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
 	float s1 = 0.0f;
 	float theta = 0.0f;
 	float phi = 0.0f;
+	float para1 = 0.0f;
+	float para2 = 0.0f;
 	
 	const float alpha0 = 0.0f;
 	const float alpha1 = 1.0f;
@@ -290,7 +294,7 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
    	}
    	cudaThreadSynchronize();
 
-   	kernel_normalization<<<grid2, block2>>> (d_b, beta, d_b_norm, h, n*n);
+   	kernel_normalization<<<grid2, block2>>> (d_b, beta, d_u, h, n*n);
 
 	// martrix-vector multiplication in each position 
 	// Vector0 shift vector
@@ -301,9 +305,9 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
 		kernel_positions_new<<<grid3, block3, n*sizeof(int)>>> (d_pos_newx, d_pos_newy,  d_pos_newx_tot, d_pos_newy_tot, shift_x, shift_y, n);
 		kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
 												   d_ytot_large, d_positions_temp, d_positions_shifted, n*n, nz);
-		kernel_divide_vector<<<grid2, block2>>> (d_b_norm, d_u, h, i);
+		kernel_divide_vector<<<grid2, block2>>> (d_u, d_u_small, h, i);
 
-		status = cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u, 1, &beta0, d_aux0, 1);
+		status = cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux0, 1);
 		if (status != CUBLAS_STATUS_SUCCESS) {
         	printf("cublasSgemv failed");
     	}
@@ -316,7 +320,7 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
     	if (status != CUBLAS_STATUS_SUCCESS) {
         	printf("cublasSaxpy failed");
     	}
-    	// cudaThreadSynchronize();
+    	cudaThreadSynchronize();
 
 	}
 
@@ -338,6 +342,7 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
     cudaThreadSynchronize();
 
    	// kernel_datacopy<<<grid4, block4>>> (d_v, d_w, w);
+
    	// Vector1 shift matrix
    	for(int j = 0; j < k; j++)
    	{
@@ -359,22 +364,22 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
     		kernel_combine_vector<<<grid2, block2>>> (d_aux1, d_vector1, h, i);
 		}
 		// p = vector1 - alpha * u;
-		status = cublasSaxpy(handle, h*n*n, &alpha_minus, d_b_norm, 1, d_vector1, 1);
+		status = cublasSaxpy(handle, h*n*n, &alpha_minus, d_u, 1, d_vector1, 1);
 		if (status != CUBLAS_STATUS_SUCCESS) {
         	printf("cublasSaxpy failed");
     	}
     	cudaThreadSynchronize();
 
-		status = cublasSnrm2(handle, h*n*n, d_vector1, 1, &beta);
+    	status = cublasSnrm2(handle, h*n*n, d_vector1, 1, &beta);
 		if (status != CUBLAS_STATUS_SUCCESS) {
     	printf("cublasSnrm2 failed");
    		}
    		cudaThreadSynchronize();
 
-   		kernel_normalization<<<grid2, block2>>> (d_vector1, beta, d_u_large, h, n*n);
+   		kernel_normalization<<<grid2, block2>>> (d_vector1, beta, d_u, h, n*n);
    		float beta_minus = -beta;
 
-   	// Vector2 shift vector
+ 	// Vector2 shift vector
    		for (int i = 0; i < n*n; i++)
 		{
 			shift_x = posx[i] - 1;
@@ -382,16 +387,20 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
 			kernel_positions_new<<<n, n, n*sizeof(int)>>> (d_pos_newx, d_pos_newy,  d_pos_newx_tot, d_pos_newy_tot, shift_x, shift_y, n);
 			kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
 												   d_ytot_large, d_positions_temp, d_positions_shifted, n*n, nz);
-			kernel_divide_vector<<<grid2, block2>>> (d_u_large, d_u, h, i);
+			kernel_divide_vector<<<grid2, block2>>> (d_u, d_u_small, h, i);
 
-			status = cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u, 1, &beta0, d_aux2, 1);
+			status = cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux2, 1);
 			if (status != CUBLAS_STATUS_SUCCESS) {
         		printf("cublasSgemv failed");
     		}
     		cudaThreadSynchronize();
 
     		kernel_shift_vector<<<grid1, block1>>> (d_aux2, d_aux2_shifted, d_positions_shifted, n*n, nz);
-    		kernel_sum_vector<<<grid4, block4>>> (d_aux2_shifted, d_vector2, w);
+    		// // kernel_sum_vector<<<grid4, block4>>> (d_aux2_shifted, d_vector2, w);
+    		status = cublasSaxpy(handle, w, &alpha1, d_aux2_shifted, 1, d_vector2, 1);
+    		if (status != CUBLAS_STATUS_SUCCESS) {
+        		printf("cublasSaxpy failed");
+    		}
 		}
 
 		status = cublasSaxpy(handle, w, &beta_minus, d_v, 1, d_vector2, 1);
@@ -415,40 +424,20 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
    		rho_bar = -c1 * alpha;
    		phi = c1 * phi_bar;
    		phi_bar = s1 * phi_bar;
-   		float para1 = phi/rrho;
+   	// update solutions	
+   		para1 = phi/rrho;
 
-   		status = cublasScopy(handle, w, d_w, 1, d_w_scale1, 1);
-   		if (status != CUBLAS_STATUS_SUCCESS) {
-        	printf("cublasScopy failed");
-   		}
+		status = cublasSaxpy(handle, w, &para1, d_w, 1, d_x, 1);
+		if (status != CUBLAS_STATUS_SUCCESS) {
+        	printf("cublasSaxpy failed");
+    	}
     	cudaThreadSynchronize();
 
-   		status = cublasSscal(handle, w, &para1, d_w_scale1, 1);
-   		if (status != CUBLAS_STATUS_SUCCESS) {
-        	printf("cublasSscopy failed");
-   		}
-    	cudaThreadSynchronize();
-
-    	kernel_sum_vector<<<grid4, block4>>>(d_w_scale1, d_x, w);
-    	float para2 = -theta/rrho;
-
-    	status = cublasScopy(handle, w, d_w, 1, d_w_scale2, 1);
-   		if (status != CUBLAS_STATUS_SUCCESS) {
-        	printf("cublasScopy failed");
-   		}
-    	cudaThreadSynchronize();
-
-    	status = cublasSscal(handle, w, &para2, d_w_scale2, 1);
-   		if (status != CUBLAS_STATUS_SUCCESS) {
-        	printf("cublasSscopy failed");
-   		}
-    	cudaThreadSynchronize();
-
-    	kernel_update_vector<<<grid4, block4>>> (d_w, d_v, d_w_scale2, w);
+    	para2 = theta/rrho;
+    	kernel_update_vector<<<block4, grid4>>> (d_v, d_w, para2, w);
    	}
 
-
-	cudaMemcpy(vector, d_vector0, sizeof(float) * w, cudaMemcpyDeviceToHost);
+	cudaMemcpy(vector, d_x, sizeof(float) * w, cudaMemcpyDeviceToHost);
 
 	cublasDestroy(handle);
 	cudaFree(d_pos_newx);
@@ -463,20 +452,19 @@ void test_cublas(float *A_mat, float *b, int *posx, int *posy, float *vector, in
 	cudaFree(d_A_mat);
 	cudaFree(d_A_mat_shifted);
 	cudaFree(d_b);
-	cudaFree(d_b_norm);
 	cudaFree(d_u);
+	cudaFree(d_u_small);
 	cudaFree(d_aux0);
 	cudaFree(d_vector0);
 	cudaFree(d_v);
 	cudaFree(d_w);
 	cudaFree(d_aux1);
 	cudaFree(d_vector1);
-	cudaFree(d_u_large);
+	cudaFree(d_u_small_large);
 	cudaFree(d_aux2);
 	cudaFree(d_aux2_shifted);
 	cudaFree(d_vector2);
 	cudaFree(d_x);
 	cudaFree(d_w_scale1);
 	cudaFree(d_w_scale2);
-
 }

@@ -251,7 +251,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	dim3 grid6 = dim3(n*n, 1, 1);
 
 	dim3 block7(256, 1);
-	dim3 grid7((w + block4.x - 1)/block4.x, 1);
+	dim3 grid7((w + block7.x - 1)/block7.x, 1);
 
 	float alpha = 0.0f;
 	float beta = 0.0f;

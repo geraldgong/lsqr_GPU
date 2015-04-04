@@ -43,26 +43,6 @@ __global__ void kernel_positions_new(int *d_pos_newx, int *d_pos_newy, int *d_po
 }
 
 
-__global__ void kernel_positions_shifted(int *d_positions, int *d_pos_newx_tot, int *d_pos_newy_tot, 
-										 int *d_layer_positions, int *pos_shift_x, int *d_positions_shifted, int w, int h)
-{
-
-	int col = threadIdx.x + blockDim.x * blockIdx.x;
-	// int row = threadIdx.y + blockDim.y * blockIdx.y;
-
-	if (col >= w)
-	{
-		return;
-	}
-
-	d_layer_positions[col] = d_positions[col + w * h];
-	int temp1 = d_pos_newx_tot[col];
-	pos_shift_x[col] = d_layer_positions[temp1 - 1];
-	int temp2 = d_pos_newy_tot[col];
-	d_positions_shifted[col + w * h] = pos_shift_x[temp2 - 1];
-	
-}
-
 __global__ void kernel_shift_positions(int *d_positions, int *d_pos_newx_tot, int *d_pos_newy_tot, int *d_xtot_large, 
 									   int *d_ytot_large, int *d_positions_temp, int *d_positions_shifted, int w, int h)
 {
@@ -113,19 +93,30 @@ __global__ void kernel_shift_vector(float *d_vector, float *d_vector_shifted, in
 	int index = d_positions_shifted[x];
 	d_vector_shifted[x] = d_vector[index - 1];
 }
-__global__ void kernel_divide_vector(float *d_b_tot, float *d_b, int i)
+
+
+__global__ void kernel_divide_vector(float *d_src, float *d_res, int w, int i)
 {
-	int x = threadIdx.x;
-	d_b[x] = d_b_tot[x + i * blockDim.x];
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
+
+	if (x < w)
+	{
+		d_res[x] = d_src[x + i * w];
+	}
 
 }
 
-
-__global__ void kernel_combine_vector(float *d_v, float *d_v_tot, int i)
+__global__ void kernel_combine_vector(float *d_src, float *d_res, int w, int i)
 {
-	int x = threadIdx.x;
-	d_v_tot[x + i * blockDim.x] = d_v[x];
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
+
+	if (x < w)
+	{
+		d_res[x + i * w] = d_src[x];
+	}
+
 }
+
 
 __global__ void kernel_update_vector(float *d_src, float *d_res, float para, int w)
 {
@@ -151,6 +142,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
 	if (!mxIsSingle(prhs[0]))
 		mexErrMsgTxt("input matrix data type must be single");
+
 //initialization
   	float *A_mat = (float*)mxGetData(prhs[0]);
 
@@ -272,11 +264,11 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	dim3 block5 = dim3(16, 16, 1);
 	dim3 grid5 = dim3((w + block5.x - 1)/block5.x, (h + block5.y - 1)/block5.y, 1);
 
-	dim3 block6 = dim3(h, 1, 1);
-	dim3 grid6 = dim3(n*n, 1, 1);
+	dim3 block6 = dim3(32, 32);
+	dim3 grid6 = dim3((h + block6.x - 1)/block6.x, (n*n + block6.y - 1)/block6.y);
 
-	dim3 block7(256, 1);
-	dim3 grid7((w + block7.x - 1)/block7.x, 1);
+	dim3 block7 = dim3(256, 1);
+	dim3 grid7 = dim3((w + block7.x - 1)/block7.x, 1);
 
 	float alpha = 0.0f;
 	float beta = 0.0f;
@@ -306,7 +298,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
    	cublasScopy(handle, h_b, d_b, 1, d_u ,1);
    	cublasSscal(handle, h_b, &beta_norm, d_u, 1);
 
-   	
+// Vector0   	
 	for (int i = 0; i < n*n; i++)
 	{
 		int shift_x = pos_x[i] - 1;
@@ -317,7 +309,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 		kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
 												   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
 
-		kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, i);
+		kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, h, i);
 		cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux0, 1);
 		kernel_shift_vector<<<grid7, block7>>> (d_aux0, d_aux0_shifted, d_positions_shifted, w);
 		cublasSaxpy(handle, w, &alpha1, d_aux0_shifted, 1, d_Vector0, 1);
@@ -335,7 +327,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
    	cublasScopy(handle, w, d_r, 1, d_v ,1);
 	cublasSscal(handle, w, &alpha_norm, d_v, 1);
 	cublasScopy(handle, w, d_v, 1, d_w ,1);
-
+// Vector1
 	for(int j = 0; j < k; j++)
 	{
 		for (int i = 0; i < n*n; i++)
@@ -349,7 +341,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 			kernel_shift_matrix<<<grid5, block5>>> (d_A_mat, d_A_mat_shifted, d_positions_shifted, w, h);
 
    			cublasSgemv(handle, CUBLAS_OP_N, h, w, &alpha1, d_A_mat_shifted, h, d_v, 1, &beta0, d_aux1, 1);
-   			kernel_combine_vector<<<grid6, block6>>> (d_aux1, d_Vector1, i);
+   			kernel_combine_vector<<<grid6, block6>>> (d_aux1, d_Vector1, h, i);
     	}
 
 		cublasSaxpy(handle, h_b, &alpha_minus, d_u, 1, d_Vector1, 1);
@@ -358,7 +350,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 		beta_norm = 1 / beta;
 		cublasScopy(handle, h_b, d_p, 1, d_u ,1);
 		cublasSscal(handle, h_b, &beta_norm, d_u, 1);
-
+		// Vector2
 		for (int i = 0; i < n*n; i++)
 		{
 			int shift_x = pos_x[i] - 1;
@@ -368,7 +360,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 			kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
 												   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
 
-			kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, i);
+			kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, h, i);
 
 			cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux2, 1);
 			kernel_shift_vector<<<grid7, block7>>> (d_aux2, d_aux2_shifted, d_positions_shifted, w);

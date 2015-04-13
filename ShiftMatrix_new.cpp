@@ -1,6 +1,7 @@
 #include "ShiftMatrix_new.h"
 #include "C:\Program Files\MATLAB\R2014b\extern\include\mex.h"
 
+extern void shiftmatrix(float *A, float *As, int *ps, int posx, int posy, int n, int nz, int w, int h);
 
 void shift(int shift, int n, int *d_pos_new) // Dim [n, 1]
 {

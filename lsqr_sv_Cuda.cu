@@ -1,5 +1,6 @@
+
 // Yuxiang Gong 02.04.2015
-// Master Thesis, LSQR, shift vector, version 1.0
+// Master Thesis, LSQR, shift vector, version 2.0
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,6 +131,16 @@ __global__ void kernel_update_vector(float *d_src, float *d_res, float para, int
 	d_res[x] = d_src[x] - para * d_res[x];
 }
 
+__global__ void kernel_store_vectors(float *d_vector, float *d_matrix, int w, int i)
+{
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
+	if (x >= w)
+	{
+		return;
+	}
+
+	d_matrix[x + i * w] = d_vector[x];
+}
 
 
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
@@ -164,8 +175,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	int h_p = nz;
 	int h_b = n*n*h;
 
-	plhs[0] = mxCreateNumericMatrix(w, 1, mxSINGLE_CLASS, mxREAL);
-	float *Vector = (float*)mxGetData(plhs[0]);
+	// plhs[0] = mxCreateNumericMatrix(w, 1, mxSINGLE_CLASS, mxREAL);
+	// float *Vector = (float*)mxGetData(plhs[0]);
+	plhs[0] = mxCreateNumericMatrix(w, k, mxSINGLE_CLASS, mxREAL);
+	float *Matrix = (float*)mxGetData(plhs[0]);
 	
 
 	cublasHandle_t handle;
@@ -252,7 +265,8 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	cudaMalloc(&d_x, sizeof(float) * w);
 	thrust :: device_ptr<float> dev_ptr_x(d_x); 
     thrust :: fill(dev_ptr_x, dev_ptr_x + w, 0);
-
+	float *d_X = NULL;
+	cudaMalloc(&d_X, sizeof(float) * w * k);
 
 // Kernels
 	dim3 block1 = dim3(16, 16, 1);
@@ -261,7 +275,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	dim3 block3 = dim3(n, 1, 1);
 	dim3 grid3 = dim3(n, 1, 1);
 
-	dim3 block5 = dim3(16, 16, 1);
+	dim3 block5 = dim3(32, 16, 1);
 	dim3 grid5 = dim3((w + block5.x - 1)/block5.x, (h + block5.y - 1)/block5.y, 1);
 
 	dim3 block6 = dim3(32, 32);
@@ -269,6 +283,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
 	dim3 block7 = dim3(256, 1);
 	dim3 grid7 = dim3((w + block7.x - 1)/block7.x, 1);
+
+	dim3 block8 = dim3(32, 16);
+	dim3 grid8 = dim3((w + block8.x - 1)/block8.x, (k + block8.y - 1)/block8.y);
+
 
 	float alpha = 0.0f;
 	float beta = 0.0f;
@@ -389,13 +407,14 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
    		
 		cublasSaxpy(handle, w, &para1, d_w, 1, d_x, 1);
     	para2 = theta/rrho;
-    	kernel_update_vector<<<block7, grid7>>> (d_v, d_w, para2, w);
+    	kernel_update_vector<<<grid7, block7>>> (d_v, d_w, para2, w);
+    	kernel_store_vectors<<<grid8, block8>>> (d_x, d_X, w, j);
 
 	}
 
 
-	cublasGetVector(w, sizeof(float), d_x, 1, Vector, 1);
-	// cudaMemcpy(U, d_u, sizeof(float) * w, cudaMemcpyDeviceToHost);
+	// cublasGetVector(w, sizeof(float), d_x, 1, Vector, 1);
+	cudaMemcpy(Matrix, d_X, sizeof(float) * w * k, cudaMemcpyDeviceToHost);
 	
 
 	cublasDestroy(handle);
@@ -431,6 +450,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	cudaFree(d_aux2_shifted);
 	cudaFree(d_Vector2);
 	cudaFree(d_x);
+	cudaFree(d_X);
 
 
 /*************************************************TEST**************************************************/

@@ -1,5 +1,6 @@
+
 // Yuxiang Gong 02.04.2015
-// Master Thesis, LSQR, shift vector, version 1.0
+// Master Thesis, LSQR, shift vector, version 2.0
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,10 +142,19 @@ __global__ void kernel_store_vectors(float *d_vector, float *d_matrix, int w, in
 	d_matrix[x + i * w] = d_vector[x];
 }
 
+__global__ void kernel_sum_vectors(float *d_v1, float *d_v2, int w)
+{
+	int x = threadIdx.x + blockDim.x * blockIdx.x;
+	if (x >= w)
+	{
+		return;
+	}
+	d_v2[x] = d_v1[x] + d_v2[x];
+}
 
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 {
-	if (nrhs != 7)
+	if (nrhs != 8)
 		mexErrMsgTxt("Invaid number of input arguments");
 
 	if (nlhs != 1)
@@ -165,15 +175,19 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	double *n_d = (double*)mxGetData(prhs[4]); //_d means double
 	double *nz_d = (double*)mxGetData(prhs[5]);
 	double *k_d = (double*)mxGetData(prhs[6]);
+	double *lambda_d = (double*)mxGetData(prhs[7]);
 	
 	int n = (int)(*n_d);
 	int nz = (int)(*nz_d);
 	int k = (int)(*k_d);
+	float lambda = (float)(*lambda_d);
 
 	int w_p = n*n;
 	int h_p = nz;
 	int h_b = n*n*h;
 
+	// plhs[0] = mxCreateNumericMatrix(w, 1, mxSINGLE_CLASS, mxREAL);
+	// float *Vector = (float*)mxGetData(plhs[0]);
 	plhs[0] = mxCreateNumericMatrix(w, k, mxSINGLE_CLASS, mxREAL);
 	float *Matrix = (float*)mxGetData(plhs[0]);
 	
@@ -218,7 +232,6 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
 	float *d_A_mat_shifted = NULL;
 	cudaMalloc(&d_A_mat_shifted, sizeof(float) * w * h);
-	// cudaMemcpy(d_A_mat_shifted, A_mat_shifted, sizeof(float) * w * h, cudaMemcpyHostToDevice);
 	//6
 	float *d_b = NULL;
 	cudaMalloc(&d_b, sizeof(float) * h_b);
@@ -262,8 +275,17 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	cudaMalloc(&d_x, sizeof(float) * w);
 	thrust :: device_ptr<float> dev_ptr_x(d_x); 
     thrust :: fill(dev_ptr_x, dev_ptr_x + w, 0);
-    float *d_X = NULL;
+	float *d_X = NULL;
 	cudaMalloc(&d_X, sizeof(float) * w * k);
+	//9 
+	float *d_Vector1_R = NULL;
+	cudaMalloc(&d_Vector1_R, sizeof(float) * w);
+	float *d_aux2_R = NULL;
+	cudaMalloc(&d_aux2_R, sizeof(float) * w);
+	float *d_aux2_R_shifted = NULL;
+	cudaMalloc(&d_aux2_R_shifted, sizeof(float) * w);
+	float *d_Vector2_R = NULL;
+	cudaMalloc(&d_Vector2_R, sizeof(float) * w);
 
 
 // Kernels
@@ -276,14 +298,15 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	dim3 block5 = dim3(16, 16, 1);
 	dim3 grid5 = dim3((w + block5.x - 1)/block5.x, (h + block5.y - 1)/block5.y, 1);
 
-	dim3 block6 = dim3(32, 32);
+	dim3 block6 = dim3(16, 16);
 	dim3 grid6 = dim3((h + block6.x - 1)/block6.x, (n*n + block6.y - 1)/block6.y);
 
-	dim3 block7 = dim3(256, 1);
+	dim3 block7 = dim3(16, 1);
 	dim3 grid7 = dim3((w + block7.x - 1)/block7.x, 1);
 
 	dim3 block8 = dim3(16, 16);
 	dim3 grid8 = dim3((w + block8.x - 1)/block8.x, (k + block8.y - 1)/block8.y);
+
 
 	float alpha = 0.0f;
 	float beta = 0.0f;
@@ -333,7 +356,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	cublasScopy(handle, w, d_Vector0, 1, d_r ,1);
 	cublasSnrm2(handle, w, d_r, 1, &alpha);
 	
-	alpha_norm = 1 / alpha;
+	alpha_norm = 1.0 / alpha;
 	phi_bar = beta;
 	rho_bar = alpha;
 	float alpha_minus = -alpha;
@@ -342,6 +365,11 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
    	cublasScopy(handle, w, d_r, 1, d_v ,1);
 	cublasSscal(handle, w, &alpha_norm, d_v, 1);
 	cublasScopy(handle, w, d_v, 1, d_w ,1);
+
+	float norm_R = 0.0f;
+	float beta_nR = 0.0f; //non-regularization
+	float lambda2 = lambda * lambda;
+	
 // Vector1
 	for(int j = 0; j < k; j++)
 	{
@@ -354,17 +382,31 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 			kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
 												   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
 			kernel_shift_matrix<<<grid5, block5>>> (d_A_mat, d_A_mat_shifted, d_positions_shifted, w, h);
-
+			
    			cublasSgemv(handle, CUBLAS_OP_N, h, w, &alpha1, d_A_mat_shifted, h, d_v, 1, &beta0, d_aux1, 1);
+   			
    			kernel_combine_vector<<<grid6, block6>>> (d_aux1, d_Vector1, h, i);
     	}
-
+    	// *** regularization part //
+    	cublasScopy(handle, w, d_v, 1, d_Vector1_R ,1);
+    	cublasSscal(handle, w, &lambda2, d_Vector1_R, 1);
+    	cublasSnrm2(handle, w, d_Vector1_R, 1, &norm_R);
+    	// *** //
 		cublasSaxpy(handle, h_b, &alpha_minus, d_u, 1, d_Vector1, 1);
 		cublasScopy(handle, h_b, d_Vector1, 1, d_p ,1);
-		cublasSnrm2(handle, h_b, d_p, 1, &beta);
-		beta_norm = 1 / beta;
+		cublasSnrm2(handle, h_b, d_p, 1, &beta_nR);
+		// *** //
+		beta = sqrt(pow(beta_nR, 2) + n * n * pow(norm_R, 2));
+		// *** //
+		beta_norm = 1.0/ beta;
 		cublasScopy(handle, h_b, d_p, 1, d_u ,1);
 		cublasSscal(handle, h_b, &beta_norm, d_u, 1);
+		// *** //
+		cublasSscal(handle, w, &beta_norm, d_Vector1_R, 1);
+		cublasScopy(handle, h_b, d_Vector1_R, 1, d_aux2_R ,1);
+		cublasSscal(handle, w, &lambda2, d_aux2_R, 1);
+		// *** //
+		
 		// Vector2
 		for (int i = 0; i < n*n; i++)
 		{
@@ -380,8 +422,15 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 			cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux2, 1);
 			kernel_shift_vector<<<grid7, block7>>> (d_aux2, d_aux2_shifted, d_positions_shifted, w);
 			cublasSaxpy(handle, w, &alpha1, d_aux2_shifted, 1, d_Vector2, 1);
+			// *** //
+			kernel_shift_vector<<<grid7, block7>>> (d_aux2_R, d_aux2_R_shifted, d_positions_shifted, w);
+			cublasSaxpy(handle, w, &alpha1, d_aux2_R_shifted, 1, d_Vector2_R, 1);
+			// *** //
 		}
-
+		// *** //
+		// cublasSaxpy(handle, w, &alpha1, d_Vector2_R, 1, d_Vector2, 1);
+		kernel_sum_vectors<<<grid7, block7>>> (d_Vector2_R, d_Vector2, w);
+		// *** //
 		beta_minus = -beta;
 
 		cublasSaxpy(handle, w, &beta_minus, d_v, 1, d_Vector2, 1);
@@ -404,14 +453,14 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
    		
 		cublasSaxpy(handle, w, &para1, d_w, 1, d_x, 1);
     	para2 = theta/rrho;
-    	kernel_update_vector<<<block7, grid7>>> (d_v, d_w, para2, w);
+    	kernel_update_vector<<<grid7, block7>>> (d_v, d_w, para2, w);
     	kernel_store_vectors<<<grid8, block8>>> (d_x, d_X, w, j);
+
 	}
 
 
 	// cublasGetVector(w, sizeof(float), d_x, 1, Vector, 1);
 	cudaMemcpy(Matrix, d_X, sizeof(float) * w * k, cudaMemcpyDeviceToHost);
-	
 
 	cublasDestroy(handle);
 	//1
@@ -447,6 +496,13 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	cudaFree(d_Vector2);
 	cudaFree(d_x);
 	cudaFree(d_X);
+	//9
+	cudaFree(d_Vector1_R);
+	cudaFree(d_aux2_R);
+	cudaFree(d_aux2_R_shifted);
+	cudaFree(d_Vector2_R);
+
+
 
 /*************************************************TEST**************************************************/
 	// cudaEventRecord(start, 0);
@@ -457,5 +513,5 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 	// cudaEventDestroy(start);  
 	// cudaEventDestroy(stop);
 
- 	
+ 	return;
 }

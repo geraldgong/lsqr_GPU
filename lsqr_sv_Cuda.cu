@@ -1,6 +1,6 @@
 
 // Yuxiang Gong 02.04.2015
-// Master Thesis, LSQR, shift vector, version 2.0
+// Master Thesis, LSQR, shift vector, version 3.0 23/04/2015
 
 #include <stdio.h>
 #include <stdlib.h>

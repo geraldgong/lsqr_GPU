@@ -1,4 +1,4 @@
-// version 150609 
+// version 20150702
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,26 +43,27 @@ __global__ void kernel_positions_new(int *d_pos_newx, int *d_pos_newy, int *d_po
 }
 
 
-__global__ void kernel_shift_positions(int *d_positions, int *d_pos_newx_tot, int *d_pos_newy_tot, int *d_xtot_large, 
-                                       int *d_ytot_large, int *d_positions_temp, int *d_positions_shifted, int w, int h)
+
+__global__ void kernel_shift_positions(int *d_positions, int *d_pos_newx_tot, int *d_pos_newy_tot, int *d_positions_layer,
+                                       int *d_positions_temp, int *d_positions_shifted, int w, int h)
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
-    int idx = x + y * w;
+
     if (x >= w || y >= h){
         return;
     }
 
+
+    int temp1 = d_pos_newx_tot[x];
+    d_positions_temp[x] = d_positions[temp1 - 1];
+    int temp2 = d_pos_newy_tot[x];
+    d_positions_layer[x] = d_positions_temp[temp2 - 1];
+
     for (int i = 0; i < h; i++)
     {
-        d_xtot_large[x + i * w] = d_pos_newx_tot[x] + i * w;
-        d_ytot_large[x + i * w] = d_pos_newy_tot[x] + i * w;
+        d_positions_shifted[x + i * w] = d_positions_layer[x] + i * w;
     }
-
-    int temp1 = d_xtot_large[idx];
-    d_positions_temp[idx] = d_positions[temp1 - 1];
-    int temp2 = d_ytot_large[idx];
-    d_positions_shifted[idx] = d_positions_temp[temp2 - 1];
 
 }
 
@@ -200,16 +201,17 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
  // Time
     // cudaEvent_t start, stop;  
+
     // float time;
- //     cudaEventCreate(&start);  
+    //  cudaEventCreate(&start);  
     // cudaEventCreate(&stop);  
 
 // Memory Allocation    
     // 1
     int *d_positions = NULL;
-    cudaMalloc(&d_positions, sizeof(int) * w_p * h_p);
+    cudaMalloc(&d_positions, sizeof(int) * w_p);
     thrust :: device_ptr<int> dev_ptr(d_positions); 
-    thrust :: sequence(dev_ptr, dev_ptr + w_p*h_p, 1);
+    thrust :: sequence(dev_ptr, dev_ptr + w_p, 1);
     // 2
     int *d_pos_newx = NULL;
     cudaMalloc(&d_pos_newx, sizeof(int) * n);
@@ -220,12 +222,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
     cudaMalloc(&d_pos_newx_tot, sizeof(int) * w_p);
     int *d_pos_newy_tot = NULL;
     cudaMalloc(&d_pos_newy_tot, sizeof(int) * w_p); 
-    int *d_xtot_large = NULL;
-    cudaMalloc(&d_xtot_large, sizeof(int) * w_p * h_p);
-    int *d_ytot_large = NULL;
-    cudaMalloc(&d_ytot_large, sizeof(int) * w_p * h_p);
+    int *d_positions_layer = NULL;
+    cudaMalloc(&d_positions_layer, sizeof(int) * w_p);
     int *d_positions_temp = NULL;
-    cudaMalloc(&d_positions_temp, sizeof(int) * w_p * h_p);
+    cudaMalloc(&d_positions_temp, sizeof(int) * w_p);
     int *d_positions_shifted = NULL;
     cudaMalloc(&d_positions_shifted, sizeof(int) * w_p * h_p);
     // 5
@@ -309,7 +309,6 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
     dim3 block8 = dim3(16, 1);
     dim3 grid8 = dim3((w + block8.x - 1)/block8.x, (k + block8.y - 1)/block8.y);
 
-
     float alpha = 0.0f;
     float beta = 0.0f;
     float beta_norm = 0.0f;
@@ -338,6 +337,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
     cublasScopy(handle, h_b, d_b, 1, d_u ,1);
     cublasSscal(handle, h_b, &beta_norm, d_u, 1);
 
+    // cudaEventRecord(start, 0);
 // Vector0      
     for (int i = 0; i < n*n; i++)
     {
@@ -346,14 +346,22 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
         kernel_positions_new<<<grid3, block3>>> (d_pos_newx, d_pos_newy, d_pos_newx_tot, d_pos_newy_tot, shift_x, shift_y ,n);
     
-        kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
-                                                   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
+        kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_positions_layer, 
+                                                   d_positions_temp, d_positions_shifted, w_p, h_p);
 
         kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, h, i);
         cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux0, 1);
         kernel_shift_vector<<<grid7, block7>>> (d_aux0, d_aux0_shifted, d_positions_shifted, w);
         cublasSaxpy(handle, w, &alpha1, d_aux0_shifted, 1, d_Vector0, 1);
     }
+
+
+    // cudaEventRecord(stop, 0);  
+    // cudaEventSynchronize(stop);  
+    // cudaEventElapsedTime(&time0, start, stop);  
+    // cudaEventDestroy(start);  
+    // cudaEventDestroy(stop);
+    // printf("%f\n", time0);
 
     cublasScopy(handle, w, d_Vector0, 1, d_r ,1);
     cublasSnrm2(handle, w, d_r, 1, &alpha);
@@ -370,25 +378,27 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
     float norm_R = 0.0f;
     float beta_nR = 0.0f; //non-regularization
-    float lambda2 = lambda * lambda;
     
     // Vector1
     for(int j = 0; j < k; j++)
     {
+ 
         for (int i = 0; i < n*n; i++)
         {
             int shift_x = pos_x[i] - 1;
             int shift_y = pos_y[i] - 1;
 
             kernel_positions_new<<<grid3, block3>>> (d_pos_newx, d_pos_newy, d_pos_newx_tot, d_pos_newy_tot, shift_x, shift_y ,n);
-            kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
-                                                   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
+
+            kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_positions_layer, 
+                                                   d_positions_temp, d_positions_shifted, w_p, h_p);
             kernel_shift_matrix<<<grid5, block5>>> (d_A_mat, d_layer, d_v, d_aux1, d_positions_shifted, w, h);            
             kernel_combine_vector<<<grid6, block6>>> (d_aux1, d_Vector1, h, i);
         }
+
         //*** regularization part //
         cublasScopy(handle, w, d_v, 1, d_Vector1_R ,1);
-        cublasSscal(handle, w, &lambda2, d_Vector1_R, 1);
+        cublasSscal(handle, w, &lambda, d_Vector1_R, 1);
         cublasSnrm2(handle, w, d_Vector1_R, 1, &norm_R);
         // *** //
         cublasSaxpy(handle, h_b, &alpha_minus, d_u, 1, d_Vector1, 1);
@@ -403,9 +413,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
         // *** //
         cublasSscal(handle, w, &beta_norm, d_Vector1_R, 1);
         cublasScopy(handle, h_b, d_Vector1_R, 1, d_aux2_R ,1);
-        cublasSscal(handle, w, &lambda2, d_aux2_R, 1);
+        cublasSscal(handle, w, &lambda, d_aux2_R, 1);
         // *** //
-        
+
+
         // Vector2
         for (int i = 0; i < n*n; i++)
         {
@@ -413,8 +424,9 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
             int shift_y = pos_y[i] - 1;
     
             kernel_positions_new<<<grid3, block3>>> (d_pos_newx, d_pos_newy, d_pos_newx_tot, d_pos_newy_tot, shift_x, shift_y ,n);
-            kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_xtot_large, 
-                                                   d_ytot_large, d_positions_temp, d_positions_shifted, w_p, h_p);
+
+            kernel_shift_positions<<<grid1, block1>>> (d_positions, d_pos_newx_tot, d_pos_newy_tot, d_positions_layer, 
+                                                   d_positions_temp, d_positions_shifted, w_p, h_p);
 
             kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, h, i);
 
@@ -426,6 +438,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
             cublasSaxpy(handle, w, &alpha1, d_aux2_R_shifted, 1, d_Vector2_R, 1);
             // *** //
         }
+
         // *** //
         // cublasSaxpy(handle, w, &alpha1, d_Vector2_R, 1, d_Vector2, 1);
         kernel_sum_vectors<<<grid7, block7>>> (d_Vector2_R, d_Vector2, w);
@@ -467,8 +480,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
     //3
     cudaFree(d_pos_newx_tot);
     cudaFree(d_pos_newy_tot);
-    cudaFree(d_xtot_large);
-    cudaFree(d_ytot_large);
+    cudaFree(d_positions_layer);
     cudaFree(d_positions_temp);
     cudaFree(d_positions_shifted);
     //5
@@ -501,11 +513,5 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
 
 
 /*************************************************TEST**************************************************/
-    // cudaEventRecord(start, 0);
 
-    // cudaEventRecord(stop, 0);  
-    // cudaEventSynchronize(stop);  
-    // cudaEventElapsedTime(&time, start, stop);  
-    // cudaEventDestroy(start);  
-    // cudaEventDestroy(stop);
 }

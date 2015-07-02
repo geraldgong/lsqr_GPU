@@ -401,6 +401,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
         cublasSscal(handle, w, &lambda, d_Vector1_R, 1);
         cublasSnrm2(handle, w, d_Vector1_R, 1, &norm_R);
         // *** //
+        // norm part
         cublasSaxpy(handle, h_b, &alpha_minus, d_u, 1, d_Vector1, 1);
         cublasScopy(handle, h_b, d_Vector1, 1, d_p ,1);
         cublasSnrm2(handle, h_b, d_p, 1, &beta_nR);
@@ -410,11 +411,10 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
         beta_norm = 1.0/ beta;
         cublasScopy(handle, h_b, d_p, 1, d_u ,1);
         cublasSscal(handle, h_b, &beta_norm, d_u, 1);
-        // *** //
+        
         cublasSscal(handle, w, &beta_norm, d_Vector1_R, 1);
         cublasScopy(handle, h_b, d_Vector1_R, 1, d_aux2_R ,1);
         cublasSscal(handle, w, &lambda, d_aux2_R, 1);
-        // *** //
 
 
         // Vector2
@@ -431,8 +431,6 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
             kernel_divide_vector<<<grid6, block6>>> (d_u, d_u_small, h, i);
 
             cublasSgemv(handle, CUBLAS_OP_T, h, w, &alpha1, d_A_mat, h, d_u_small, 1, &beta0, d_aux2, 1);
-            kernel_shift_vector<<<grid7, block7>>> (d_aux2, d_aux2_shifted, d_positions_shifted, w);
-            cublasSaxpy(handle, w, &alpha1, d_aux2_shifted, 1, d_Vector2, 1);
             // *** //
             kernel_shift_vector<<<grid7, block7>>> (d_aux2_R, d_aux2_R_shifted, d_positions_shifted, w);
             cublasSaxpy(handle, w, &alpha1, d_aux2_R_shifted, 1, d_Vector2_R, 1);
@@ -440,8 +438,8 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, mxArray *prhs[])
         }
 
         // *** //
-        // cublasSaxpy(handle, w, &alpha1, d_Vector2_R, 1, d_Vector2, 1);
-        kernel_sum_vectors<<<grid7, block7>>> (d_Vector2_R, d_Vector2, w);
+        cublasSaxpy(handle, w, &alpha1, d_Vector2_R, 1, d_Vector2, 1);
+        // kernel_sum_vectors<<<grid7, block7>>> (d_Vector2_R, d_Vector2, w);
         // *** //
         beta_minus = -beta;
 
